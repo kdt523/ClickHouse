@@ -831,6 +831,38 @@ static ColumnWithTypeAndName executeActionForPartialResult(const ActionsDAG::Nod
         {
             try
             {
+                // Ensure all non-const argument columns conform to input_rows_count.
+                // During partial evaluation (input_rows_count <= 1), some arguments
+                // like Nullable(Nothing) can appear as non-const columns with 0 rows.
+                // Normalize them to a const column with default value of size input_rows_count
+                // to satisfy size checks inside function execution.
+                for (auto & arg : arguments)
+                {
+                    if (!arg.column)
+                        continue;
+                    if (isColumnConst(*arg.column))
+                        continue;
+
+                    const size_t current_size = arg.column->size();
+                    if (current_size == input_rows_count)
+                        continue;
+
+                    if (current_size == 0)
+                    {
+                        // Create a const column with the default value (NULL for Nullable types)
+                        arg.column = arg.type->createColumnConst(input_rows_count, arg.type->getDefault());
+                    }
+                    else if (input_rows_count < current_size)
+                    {
+                        // Shrink to the required size
+                        arg.column = arg.column->cloneResized(input_rows_count);
+                    }
+                    else
+                    {
+                        // For safety, fallback to a const default of the expected size
+                        arg.column = arg.type->createColumnConst(input_rows_count, arg.type->getDefault());
+                    }
+                }
                 res_column.column = node->function->execute(arguments, res_column.type, input_rows_count, true);
             }
             catch (Exception & e)
